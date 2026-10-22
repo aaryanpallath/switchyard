@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"time"
 
@@ -68,12 +69,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	tried := map[string]bool{}
 	var lastErr error
+	var lastID string
 	for range attempts {
 		b, err := p.pool.Pick(tried)
 		if err != nil {
 			break
 		}
 		tried[b.ID] = true
+		lastID = b.ID
 		resp, cancel, err := p.try(r, b, body)
 		if err == nil && resp.StatusCode < 500 {
 			p.pool.Done(b, true)
@@ -91,7 +94,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			resp.Body.Close()
 		} else {
-			lastErr = err
+			lastErr = redact(err)
 		}
 		cancel()
 		if r.Context().Err() != nil { // the client gave up
@@ -101,7 +104,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	msg := "no healthy backend"
 	if lastErr != nil {
 		// the detail names internal backends, so it goes to the log, not to the client
-		log.Printf("proxy: %s %s failed after %d tries: %v", r.Method, r.URL.Path, len(tried), lastErr)
+		log.Printf("proxy: %s request failed after %d tries, last on %s: %v", r.Method, len(tried), lastID, lastErr)
 		msg = "bad gateway"
 	}
 	http.Error(w, msg, http.StatusBadGateway)
@@ -153,6 +156,16 @@ func relay(w http.ResponseWriter, resp *http.Response) {
 	stripHopByHop(w.Header())
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// redact drops the request URL from a transport error, since its query string can carry credentials; what's left
+// says what went wrong ("dial tcp ...: connection refused", "context deadline exceeded").
+func redact(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }
 
 // stripHopByHop removes the standard hop-by-hop headers and any header the Connection header names.

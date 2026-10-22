@@ -15,11 +15,16 @@ func do(t *testing.T, h http.Handler, method, path, body string, headers ...stri
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Host = "127.0.0.1:8081"
+	r.RemoteAddr = "127.0.0.1:50000"
 	r.Header.Set("Content-Type", "application/json")
 	for i := 0; i+1 < len(headers); i += 2 {
-		r.Header.Set(headers[i], headers[i+1])
-		if headers[i] == "Host" {
+		switch headers[i] {
+		case "Host":
 			r.Host = headers[i+1]
+		case "RemoteAddr":
+			r.RemoteAddr = headers[i+1]
+		default:
+			r.Header.Set(headers[i], headers[i+1])
 		}
 	}
 	h.ServeHTTP(w, r)
@@ -67,6 +72,9 @@ func TestAdminRefusesBrowsersRebindingAndMissingTokens(t *testing.T) {
 	if w := do(t, open, "POST", "/backends", body, "Content-Type", "text/plain"); w.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("form-style post: %d", w.Code)
 	}
+	if w := do(t, open, "GET", "/backends", "", "RemoteAddr", "203.0.113.9:4444", "Host", "localhost:8081"); w.Code != http.StatusForbidden {
+		t.Fatalf("remote client claiming Host: localhost: %d", w.Code)
+	}
 	if w := do(t, open, "GET", "/backends", "", "Host", "localhost:8081"); w.Code != http.StatusOK {
 		t.Fatalf("localhost: %d", w.Code)
 	}
@@ -80,5 +88,14 @@ func TestAdminRefusesBrowsersRebindingAndMissingTokens(t *testing.T) {
 	}
 	if w := do(t, locked, "POST", "/backends", body, "Host", "lb.internal:8081", "Authorization", "Bearer s3cret"); w.Code != http.StatusCreated {
 		t.Fatalf("right token from another host: %d", w.Code)
+	}
+}
+
+func TestLoopbackAddr(t *testing.T) {
+	for addr, want := range map[string]bool{"127.0.0.1:8081": true, "localhost:8081": true, "[::1]:8081": true,
+		":8081": false, "0.0.0.0:8081": false, "10.0.0.5:8081": false} {
+		if LoopbackAddr(addr) != want {
+			t.Errorf("LoopbackAddr(%q) = %v", addr, !want)
+		}
 	}
 }

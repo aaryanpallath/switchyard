@@ -6,7 +6,8 @@
 //	GET    /healthz          the balancer's own health
 //
 // The API can redirect all traffic, so every request must carry the bearer token when one is configured. Without a
-// token, only requests addressed to a loopback host name are accepted, which stops DNS rebinding. Requests with an
+// token, only requests from a loopback address, addressed to a loopback host name, are accepted: the first proves
+// the caller is local, the second stops DNS rebinding. Requests with an
 // Origin header (sent by browsers) are refused either way, so a web page cannot drive the API through a visitor's
 // browser, and POST requires a JSON content type.
 package admin
@@ -21,6 +22,12 @@ import (
 
 	"github.com/aaryanpallath/switchyard/internal/pool"
 )
+
+// LoopbackAddr reports whether a listen address only accepts local connections.
+func LoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	return err == nil && host != "" && loopbackHost(host)
+}
 
 func loopbackHost(hostport string) bool {
 	host, _, err := net.SplitHostPort(hostport)
@@ -41,7 +48,9 @@ func guard(token string, next http.Handler) http.Handler {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "browser requests are not accepted"})
 		case token != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1:
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or wrong bearer token"})
-		case token == "" && !loopbackHost(r.Host):
+		case token == "" && (!loopbackHost(r.RemoteAddr) || !loopbackHost(r.Host)):
+			// the peer address is what proves the caller is local (a remote client can send any Host header);
+			// the Host check additionally stops a browser that was pointed here by DNS rebinding
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "without a token, only localhost may call the admin API"})
 		default:
 			next.ServeHTTP(w, r)

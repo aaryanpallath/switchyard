@@ -73,13 +73,16 @@ go test -race ./...
 
 **Design notes**
 - **The admin API is locked down, because anyone who can register a backend can redirect all traffic.**
-  - It listens on localhost by default and, without a token, accepts only requests addressed to a loopback host
-    name, which stops DNS rebinding.
+  - It listens on localhost by default. Without a token, it accepts only requests that come from a loopback
+    address (a remote client can send any `Host` header, so the peer address is what counts) and are addressed to a
+    loopback host name, which stops DNS rebinding. The balancer refuses to start with a non-local admin address
+    and no token.
   - Setting `SWITCHYARD_ADMIN_TOKEN` requires a bearer token (compared in constant time); that's needed to reach
     the API from another host.
   - Requests from browsers (anything with an `Origin` header) are refused, and POST requires a JSON content type,
     so a web page can't drive the API through an operator's browser.
-- **Error responses never name a backend.** Clients get a plain "bad gateway"; the detail goes to the server log.
+- **Error responses never name a backend.** Clients get a plain "bad gateway". The server log gets the backend
+  id and the underlying error, but not the request URL, whose query string could carry credentials.
 - **Request bodies are buffered (1 MB limit, 413 above it),** so a retry can resend them.
 - **Hop-by-hop headers are stripped** in both directions, including any header the `Connection` header names.
   `Forwarded`, `X-Real-IP` and the `X-Forwarded-*` headers are replaced with values from the connection itself, so
@@ -110,5 +113,6 @@ go test -race ./...
   network. The comparison between configurations is the point, not the milliseconds.
 
 Built with AI assistance (Claude Code). I reviewed the code; the experiment and the tests are how I verified it,
-and they caught the bug above. An automated security review of the first version flagged the open admin API,
-spoofable forwarding headers and backend addresses in error messages; all three are fixed and tested.
+and they caught the bug above. An automated security review of the first version flagged the admin API's exposure to
+browsers, spoofable forwarding headers and backend addresses in error messages; a second review caught that a
+`Host` check alone can be bypassed and that logs could capture query strings. All of these are fixed and tested.

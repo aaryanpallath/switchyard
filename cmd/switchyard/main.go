@@ -39,6 +39,9 @@ func main() {
 	flag.Var(&backends, "backend", "backend URL (repeatable)")
 	token := os.Getenv("SWITCHYARD_ADMIN_TOKEN") // required to expose the admin API beyond localhost
 	flag.Parse()
+	if token == "" && !admin.LoopbackAddr(*adminAddr) {
+		log.Fatalf("-admin %s is reachable from other hosts: set SWITCHYARD_ADMIN_TOKEN or listen on 127.0.0.1", *adminAddr)
+	}
 
 	cfg := pool.DefaultConfig()
 	cfg.Strategy = pool.Strategy(*strategy)
