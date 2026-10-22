@@ -1,0 +1,62 @@
+{
+  "clients": 32,
+  "duration_s": 12,
+  "results": [
+    {
+      "setup": "round robin, nothing else",
+      "requests_after_failures": 1128,
+      "failed": 331,
+      "failed_pct": 29.343971631205672,
+      "p50_ms": 2.319,
+      "p99_ms": 1506.001,
+      "requests_per_sec": 112.8,
+      "failed_in_last_5s": 140,
+      "requests_in_last_5s": 480
+    },
+    {
+      "setup": "+ active health checks",
+      "requests_after_failures": 105594,
+      "failed": 17565,
+      "failed_pct": 16.63446786749247,
+      "p50_ms": 2.391,
+      "p99_ms": 5.492,
+      "requests_per_sec": 10559.4,
+      "failed_in_last_5s": 10867,
+      "requests_in_last_5s": 65343
+    },
+    {
+      "setup": "+ passive ejection",
+      "requests_after_failures": 110446,
+      "failed": 17,
+      "failed_pct": 0.015392137334081814,
+      "p50_ms": 2.373,
+      "p99_ms": 3.774,
+      "requests_per_sec": 11044.6,
+      "failed_in_last_5s": 7,
+      "requests_in_last_5s": 64113
+    },
+    {
+      "setup": "+ retries (3 tries, 300 ms each)",
+      "requests_after_failures": 123160,
+      "failed": 1,
+      "failed_pct": 0.0008119519324455992,
+      "p50_ms": 2.444,
+      "p99_ms": 3.944,
+      "requests_per_sec": 12316,
+      "failed_in_last_5s": 0,
+      "requests_in_last_5s": 63413
+    },
+    {
+      "setup": "all of it, least connections",
+      "requests_after_failures": 126730,
+      "failed": 0,
+      "failed_pct": 0,
+      "p50_ms": 2.407,
+      "p99_ms": 3.696,
+      "requests_per_sec": 12673,
+      "failed_in_last_5s": 0,
+      "requests_in_last_5s": 64047
+    }
+  ],
+  "scenario": "5 backends; at 2 s one dies, one returns 503 half the time (health check still passes), one takes 1.5 s per request; 32 clients, 5 s client timeout; measured from the failure on"
+}
