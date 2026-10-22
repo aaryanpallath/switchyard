@@ -78,6 +78,29 @@ func TestForwardsPathQueryBodyAndHeaders(t *testing.T) {
 	}
 }
 
+func TestClientCannotSpoofForwardingHeaders(t *testing.T) {
+	var got http.Header
+	be := serve(t, func(w http.ResponseWriter, r *http.Request) { got = r.Header.Clone() })
+	_, lb := setup(t, DefaultConfig(), be.URL)
+	req, _ := http.NewRequest(http.MethodGet, lb.URL, nil)
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-IP", "1.2.3.4")
+	req.Header.Set("Forwarded", "for=1.2.3.4")
+	req.Header.Set("Connection", "X-Secret")
+	req.Header.Set("X-Secret", "hop-by-hop, must not be forwarded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got.Get("X-Forwarded-For") != "127.0.0.1" || got.Get("X-Real-Ip") != "" || got.Get("Forwarded") != "" {
+		t.Fatalf("spoofed forwarding headers reached the backend: %v", got)
+	}
+	if got.Get("X-Secret") != "" || got.Get("X-Forwarded-Proto") != "http" {
+		t.Fatalf("hop-by-hop or proto header wrong: %v", got)
+	}
+}
+
 func TestRefusedConnectionIsRetriedElsewhere(t *testing.T) {
 	// Regression: the error path used to call a nil cancel func and crash the handler. The handler is called
 	// directly, because through a real server Go's HTTP client quietly resends a GET whose connection dies, which
@@ -143,9 +166,14 @@ func TestSlowBackendHitsTryTimeoutAndRetries(t *testing.T) {
 
 func TestAllBackendsFailing(t *testing.T) {
 	bad := serve(t, func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "down", http.StatusServiceUnavailable) })
-	_, lb := setup(t, DefaultConfig(), bad.URL, refused(t))
-	if code, _ := get(t, http.MethodGet, lb.URL, ""); code != http.StatusServiceUnavailable && code != http.StatusBadGateway {
+	dead := refused(t)
+	_, lb := setup(t, DefaultConfig(), dead, bad.URL)
+	code, body := get(t, http.MethodGet, lb.URL, "")
+	if code != http.StatusServiceUnavailable && code != http.StatusBadGateway {
 		t.Fatalf("got %d", code)
+	}
+	if strings.Contains(body, strings.TrimPrefix(dead, "http://")) {
+		t.Fatalf("error response leaks a backend address: %q", body)
 	}
 	_, empty := setup(t, DefaultConfig())
 	if code, body := get(t, http.MethodGet, empty.URL, ""); code != http.StatusBadGateway || !strings.Contains(body, "no healthy backend") {

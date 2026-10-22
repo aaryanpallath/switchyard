@@ -10,7 +10,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"net/http"
+	"net/textproto"
+	"strings"
 	"time"
 
 	"github.com/aaryanpallath/switchyard/internal/pool"
@@ -97,7 +100,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := "no healthy backend"
 	if lastErr != nil {
-		msg = "upstream failed: " + lastErr.Error()
+		// the detail names internal backends, so it goes to the log, not to the client
+		log.Printf("proxy: %s %s failed after %d tries: %v", r.Method, r.URL.Path, len(tried), lastErr)
+		msg = "bad gateway"
 	}
 	http.Error(w, msg, http.StatusBadGateway)
 }
@@ -116,10 +121,18 @@ func (p *Proxy) try(r *http.Request, b *pool.Backend, body []byte) (*http.Respon
 		return nil, func() {}, err
 	}
 	out.Header = r.Header.Clone()
-	for _, h := range hopByHop {
+	stripHopByHop(out.Header)
+	// forwarding headers come from the balancer, never from the client, which could otherwise claim any address
+	for _, h := range []string{"Forwarded", "X-Real-Ip", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
 		out.Header.Del(h)
 	}
+	proto := "http"
+	if r.TLS != nil {
+		proto = "https"
+	}
 	out.Header.Set("X-Forwarded-For", clientIP(r))
+	out.Header.Set("X-Forwarded-Host", r.Host)
+	out.Header.Set("X-Forwarded-Proto", proto)
 	out.Host = r.Host
 	resp, err := p.client.Do(out)
 	if err != nil {
@@ -137,11 +150,23 @@ func relay(w http.ResponseWriter, resp *http.Response) {
 			w.Header().Add(k, v)
 		}
 	}
-	for _, h := range hopByHop {
-		w.Header().Del(h)
-	}
+	stripHopByHop(w.Header())
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// stripHopByHop removes the standard hop-by-hop headers and any header the Connection header names.
+func stripHopByHop(h http.Header) {
+	for _, v := range h.Values("Connection") {
+		for _, name := range strings.Split(v, ",") {
+			if name = textproto.TrimString(name); name != "" {
+				h.Del(name)
+			}
+		}
+	}
+	for _, name := range hopByHop {
+		h.Del(name)
+	}
 }
 
 func singleJoin(a, b string) string {

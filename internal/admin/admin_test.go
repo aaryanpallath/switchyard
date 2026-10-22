@@ -10,15 +10,24 @@ import (
 	"github.com/aaryanpallath/switchyard/internal/pool"
 )
 
-func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+func do(t *testing.T, h http.Handler, method, path, body string, headers ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Host = "127.0.0.1:8081"
+	r.Header.Set("Content-Type", "application/json")
+	for i := 0; i+1 < len(headers); i += 2 {
+		r.Header.Set(headers[i], headers[i+1])
+		if headers[i] == "Host" {
+			r.Host = headers[i+1]
+		}
+	}
+	h.ServeHTTP(w, r)
 	return w
 }
 
 func TestBackendLifecycle(t *testing.T) {
-	h := Handler(pool.New(pool.DefaultConfig()))
+	h := Handler(pool.New(pool.DefaultConfig()), "")
 	if w := do(t, h, "POST", "/backends", `{"url": "http://10.0.0.5:9000"}`); w.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", w.Code, w.Body)
 	}
@@ -43,5 +52,33 @@ func TestBackendLifecycle(t *testing.T) {
 	}
 	if w := do(t, h, "PATCH", "/backends", ""); w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("wrong method: %d", w.Code)
+	}
+}
+
+func TestAdminRefusesBrowsersRebindingAndMissingTokens(t *testing.T) {
+	open := Handler(pool.New(pool.DefaultConfig()), "")
+	body := `{"url": "http://10.0.0.5:9000"}`
+	if w := do(t, open, "POST", "/backends", body, "Origin", "https://evil.example"); w.Code != http.StatusForbidden {
+		t.Fatalf("browser request: %d", w.Code)
+	}
+	if w := do(t, open, "POST", "/backends", body, "Host", "evil.example:8081"); w.Code != http.StatusForbidden {
+		t.Fatalf("DNS-rebound host: %d", w.Code)
+	}
+	if w := do(t, open, "POST", "/backends", body, "Content-Type", "text/plain"); w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("form-style post: %d", w.Code)
+	}
+	if w := do(t, open, "GET", "/backends", "", "Host", "localhost:8081"); w.Code != http.StatusOK {
+		t.Fatalf("localhost: %d", w.Code)
+	}
+
+	locked := Handler(pool.New(pool.DefaultConfig()), "s3cret")
+	if w := do(t, locked, "GET", "/backends", "", "Host", "lb.internal:8081"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", w.Code)
+	}
+	if w := do(t, locked, "GET", "/backends", "", "Authorization", "Bearer wrong"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong token: %d", w.Code)
+	}
+	if w := do(t, locked, "POST", "/backends", body, "Host", "lb.internal:8081", "Authorization", "Bearer s3cret"); w.Code != http.StatusCreated {
+		t.Fatalf("right token from another host: %d", w.Code)
 	}
 }

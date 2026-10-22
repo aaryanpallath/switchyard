@@ -4,22 +4,62 @@
 //	POST   /backends         {"url": "http://10.0.0.5:8080"} registers a backend
 //	DELETE /backends/{id}    removes one
 //	GET    /healthz          the balancer's own health
+//
+// The API can redirect all traffic, so every request must carry the bearer token when one is configured. Without a
+// token, only requests addressed to a loopback host name are accepted, which stops DNS rebinding. Requests with an
+// Origin header (sent by browsers) are refused either way, so a web page cannot drive the API through a visitor's
+// browser, and POST requires a JSON content type.
 package admin
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"mime"
+	"net"
 	"net/http"
 
 	"github.com/aaryanpallath/switchyard/internal/pool"
 )
 
-func Handler(p *pool.Pool) http.Handler {
+func loopbackHost(hostport string) bool {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func guard(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Origin") != "":
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "browser requests are not accepted"})
+		case token != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1:
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing or wrong bearer token"})
+		case token == "" && !loopbackHost(r.Host):
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "without a token, only localhost may call the admin API"})
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+// Handler serves the admin API. An empty token restricts it to loopback host names.
+func Handler(p *pool.Pool, token string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /backends", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, p.Status())
 	})
 	mux.HandleFunc("POST /backends", func(w http.ResponseWriter, r *http.Request) {
+		if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
+			writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "Content-Type must be application/json"})
+			return
+		}
 		var in struct {
 			URL string `json:"url"`
 		}
@@ -49,7 +89,7 @@ func Handler(p *pool.Pool) http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	return mux
+	return guard(token, mux)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

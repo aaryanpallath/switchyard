@@ -3,7 +3,8 @@
 //	switchyard -listen :8080 -admin 127.0.0.1:8081 -backend http://10.0.0.5:9000 -backend http://10.0.0.6:9000
 //
 // Traffic arrives on -listen; operators manage backends through the admin API on -admin, which listens on
-// localhost by default because it can redirect all traffic.
+// localhost by default because it can redirect all traffic. Set SWITCHYARD_ADMIN_TOKEN to require a bearer token
+// (needed to reach the API from another host).
 package main
 
 import (
@@ -12,6 +13,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -35,6 +37,7 @@ func main() {
 	healthPath := flag.String("health-path", "/healthz", "backend health endpoint")
 	interval := flag.Duration("health-interval", 2*time.Second, "time between health checks")
 	flag.Var(&backends, "backend", "backend URL (repeatable)")
+	token := os.Getenv("SWITCHYARD_ADMIN_TOKEN") // required to expose the admin API beyond localhost
 	flag.Parse()
 
 	cfg := pool.DefaultConfig()
@@ -54,7 +57,7 @@ func main() {
 
 	servers := []*http.Server{
 		{Addr: *listen, Handler: proxy.New(p, proxy.DefaultConfig()), ReadHeaderTimeout: 5 * time.Second},
-		{Addr: *adminAddr, Handler: admin.Handler(p), ReadHeaderTimeout: 5 * time.Second},
+		{Addr: *adminAddr, Handler: admin.Handler(p, token), ReadHeaderTimeout: 5 * time.Second},
 	}
 	for _, s := range servers {
 		go func() {

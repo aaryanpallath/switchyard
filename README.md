@@ -55,7 +55,8 @@ loop called a cleanup function that the error path returned as `nil`. Two lesson
 go run ./cmd/switchyard -listen :8080 -admin 127.0.0.1:8081 \
     -backend http://10.0.0.5:9000 -backend http://10.0.0.6:9000 -strategy least_connections
 
-curl -X POST localhost:8081/backends -d '{"url": "http://10.0.0.7:9000"}'   # 201 {"id": "b3", ...}
+curl -X POST localhost:8081/backends -H 'Content-Type: application/json' \
+    -d '{"url": "http://10.0.0.7:9000"}'   # 201 {"id": "b3", ...}
 curl localhost:8081/backends        # health, ejection state, in-flight and served counts per backend
 curl -X DELETE localhost:8081/backends/b3
 
@@ -66,15 +67,23 @@ go test -race ./...
 | Admin endpoint | |
 |---|---|
 | `GET /backends` | every backend: up or down, ejected until when, requests in flight, served, failed |
-| `POST /backends` `{"url": ...}` | register (422 for an invalid URL, 409 for a duplicate, 400 for unknown fields) |
+| `POST /backends` `{"url": ...}` | register (422 for an invalid URL, 409 for a duplicate, 400 for unknown fields, 415 without a JSON content type) |
 | `DELETE /backends/{id}` | remove (404 if unknown) |
 | `GET /healthz` | the balancer's own health |
 
 **Design notes**
-- **The admin API listens on localhost by default.** Anyone who can register a backend can redirect all traffic.
+- **The admin API is locked down, because anyone who can register a backend can redirect all traffic.**
+  - It listens on localhost by default and, without a token, accepts only requests addressed to a loopback host
+    name, which stops DNS rebinding.
+  - Setting `SWITCHYARD_ADMIN_TOKEN` requires a bearer token (compared in constant time); that's needed to reach
+    the API from another host.
+  - Requests from browsers (anything with an `Origin` header) are refused, and POST requires a JSON content type,
+    so a web page can't drive the API through an operator's browser.
+- **Error responses never name a backend.** Clients get a plain "bad gateway"; the detail goes to the server log.
 - **Request bodies are buffered (1 MB limit, 413 above it),** so a retry can resend them.
-- **Hop-by-hop headers are stripped** in both directions, and `X-Forwarded-For` is set from the connection itself,
-  not from a header the client could forge.
+- **Hop-by-hop headers are stripped** in both directions, including any header the `Connection` header names.
+  `Forwarded`, `X-Real-IP` and the `X-Forwarded-*` headers are replaced with values from the connection itself, so
+  a client can't claim another address.
 - **Health state needs streaks.** A backend goes down after 2 failed probes in a row and comes back after 2 passes,
   so a single blip doesn't flap it.
 - **Least connections breaks ties round-robin,** so idle backends share load evenly instead of the first one
@@ -89,7 +98,8 @@ go test -race ./...
 - **Proxy:** path, query, body and header forwarding; a refused connection retried elsewhere; a POST never retried;
   a slow backend cut off by the per-try timeout; every backend failing; the body limit; the prober marking a
   backend down and up.
-- **Admin:** the backend lifecycle and its error codes.
+- **Admin:** the backend lifecycle and its error codes; browser, DNS-rebinding and missing-token requests
+  refused.
 
 ## Limitations
 
@@ -100,4 +110,5 @@ go test -race ./...
   network. The comparison between configurations is the point, not the milliseconds.
 
 Built with AI assistance (Claude Code). I reviewed the code; the experiment and the tests are how I verified it,
-and they caught the bug above.
+and they caught the bug above. An automated security review of the first version flagged the open admin API,
+spoofable forwarding headers and backend addresses in error messages; all three are fixed and tested.
